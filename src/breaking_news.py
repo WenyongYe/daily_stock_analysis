@@ -303,8 +303,9 @@ class BreakingNewsWatcher:
     突发新闻监控主控
     """
 
-    def __init__(self, feishu_webhook_url: Optional[str] = None):
+    def __init__(self, feishu_webhook_url: Optional[str] = None, notifier=None):
         self._webhook = feishu_webhook_url or os.getenv("FEISHU_WEBHOOK_URL", "")
+        self._notifier = notifier  # 可传入 NotificationService 实例
         self._fj = FinancialJuiceFetcher()
         self._rss = RssFetcher()
         self._tracker = SeenTracker()
@@ -357,45 +358,42 @@ class BreakingNewsWatcher:
 
         return pushed
 
-    def _push_feishu(self, item: NewsItem) -> bool:
-        """推送单条到飞书"""
+    def _push(self, text: str) -> bool:
+        """统一推送：优先用 NotificationService，回退到 Webhook"""
+        # 优先使用项目自带多渠道通知
+        if self._notifier is not None:
+            return self._notifier.send(text, email_send_to_all=True)
+        # 回退：直接 Feishu Webhook
         if not self._webhook:
             logger.warning("未配置 FEISHU_WEBHOOK_URL，跳过推送")
             return False
-        payload = {
-            "msg_type": "text",
-            "content": {"text": item.format_push()},
-        }
+        payload = {"msg_type": "text", "content": {"text": text}}
         try:
             resp = requests.post(self._webhook, json=payload, timeout=10)
-            if resp.status_code == 200 and resp.json().get("code") == 0:
-                logger.info(f"推送成功: {item.title[:50]}")
-                return True
-            logger.warning(f"推送失败: {resp.text[:200]}")
+            ok = resp.status_code == 200 and resp.json().get("code") == 0
+            if ok:
+                logger.info("推送成功")
+            else:
+                logger.warning(f"推送失败: {resp.text[:200]}")
+            return ok
         except Exception as e:
             logger.error(f"推送异常: {e}")
         return False
 
+    def _push_feishu(self, item: NewsItem) -> bool:
+        """推送单条新闻"""
+        return self._push(item.format_push())
+
     def push_batch_summary(self, items: List[NewsItem]) -> bool:
         """将多条新闻合并为一条汇总消息推送"""
-        if not items or not self._webhook:
+        if not items:
             return False
         lines = [f"📡 **突发财经快讯** ({datetime.now().strftime('%H:%M')})\n"]
         for item in items:
             ts = item.published.strftime("%H:%M") if item.published else ""
             cat = f"[{item.category}] " if item.category else ""
             lines.append(f"• {ts} {cat}{item.title}")
-        text = "\n".join(lines)
-        payload = {
-            "msg_type": "text",
-            "content": {"text": text},
-        }
-        try:
-            resp = requests.post(self._webhook, json=payload, timeout=10)
-            return resp.status_code == 200 and resp.json().get("code") == 0
-        except Exception as e:
-            logger.error(f"批量推送异常: {e}")
-        return False
+        return self._push("\n".join(lines))
 
 
 # ===== 工具函数 =====

@@ -44,11 +44,12 @@ US_PROFILE = MarketProfile(
     region="us",
     mood_index_code="SPX",
     news_queries=[
-        "美股 大盘",
-        "US stock market",
-        "S&P 500 NASDAQ",
+        "US stock market S&P 500 today",
+        "Federal Reserve interest rates inflation",
+        "VIX Treasury yields market outlook",
+        "美股 宏观 行情",
     ],
-    prompt_index_hint="分析标普500、纳斯达克、道指等各指数走势特点",
+    prompt_index_hint="分析标普500、纳斯达克、道指等各指数走势特点，结合VIX和国债收益率解读市场情绪",
     has_market_stats=False,
     has_sector_rankings=False,
 )

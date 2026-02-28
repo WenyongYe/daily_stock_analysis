@@ -70,10 +70,18 @@ class MarketOverview:
     limit_down_count: int = 0           # 跌停家数
     total_amount: float = 0.0           # 两市成交额（亿元）
     # north_flow: float = 0.0           # 北向资金净流入（亿元）- 已废弃，接口不可用
-    
+
     # 板块涨幅榜
     top_sectors: List[Dict] = field(default_factory=list)     # 涨幅前5板块
     bottom_sectors: List[Dict] = field(default_factory=list)  # 跌幅前5板块
+
+    # ---- 宏观指标（美股场景）----
+    vix: Optional[float] = None                        # VIX 恐慌指数
+    vix_change_pct: Optional[float] = None             # VIX 日涨跌幅（%）
+    yield_curve: Optional[Dict] = None                 # 收益率曲线 {"3M":x,"2Y":x,"10Y":x,...}
+    spread_3m10y: Optional[float] = None               # 3M-10Y 利差（bp）
+    spread_2y10y: Optional[float] = None               # 2Y-10Y 利差（bp）
+    curve_shape: Optional[str] = None                  # 曲线形态描述
 
 
 class MarketAnalyzer:
@@ -129,11 +137,46 @@ class MarketAnalyzer:
         # 3. 获取板块涨跌榜（A 股有，美股暂无）
         if self.profile.has_sector_rankings:
             self._get_sector_rankings(overview)
-        
-        # 4. 获取北向资金（可选）
+
+        # 4. 获取宏观指标（美股场景：VIX + 收益率曲线）
+        if self.region == "us":
+            self._get_macro_indicators(overview)
+
+        # 5. 获取北向资金（可选）
         # self._get_north_flow(overview)
-        
+
         return overview
+
+    def _get_macro_indicators(self, overview: MarketOverview):
+        """获取宏观指标：VIX + 美债收益率曲线（仅美股场景）"""
+        try:
+            from src.macro_monitor import fetch_vix, fetch_yield_curve, MacroState
+
+            logger.info("[宏观] 获取 VIX 和收益率曲线...")
+            state = MacroState()
+
+            # VIX
+            vix_val = fetch_vix()
+            if vix_val is not None:
+                prev_vix = state.get_prev_vix()
+                overview.vix = round(vix_val, 2)
+                if prev_vix and prev_vix > 0:
+                    overview.vix_change_pct = round((vix_val - prev_vix) / prev_vix * 100, 1)
+                state.set_vix(vix_val)
+                logger.info(f"[宏观] VIX = {overview.vix}")
+
+            # 收益率曲线
+            curve = fetch_yield_curve()
+            if curve is not None:
+                overview.yield_curve = curve.rates
+                overview.spread_3m10y = curve.spread_3m10y
+                overview.spread_2y10y = curve.spread_2y10y
+                overview.curve_shape = curve.curve_shape
+                state.set_yields(curve.rates)
+                logger.info(f"[宏观] 收益率曲线: {curve.rates} | 利差 3M-10Y={overview.spread_3m10y}bp")
+
+        except Exception as e:
+            logger.warning(f"[宏观] 指标获取失败: {e}")
 
     
     def _get_main_indices(self) -> List[MarketIndex]:
@@ -441,6 +484,34 @@ class MarketAnalyzer:
                 snippet = n.get('snippet', '')[:100]
             news_text += f"{i}. {title}\n   {snippet}\n"
         
+        # 宏观指标文本（美股）
+        macro_block = ""
+        if self.region == "us" and (overview.vix is not None or overview.yield_curve):
+            macro_lines = ["## Macro Indicators"]
+            if overview.vix is not None:
+                vix_chg = f" ({overview.vix_change_pct:+.1f}%)" if overview.vix_change_pct is not None else ""
+                vix_label = (
+                    "Extreme Fear 🔴" if overview.vix >= 40 else
+                    "Fear 🟠" if overview.vix >= 30 else
+                    "Caution 🟡" if overview.vix >= 20 else
+                    "Normal 🟢"
+                )
+                macro_lines.append(f"- VIX: {overview.vix:.2f}{vix_chg}  [{vix_label}]")
+            if overview.yield_curve:
+                yc = overview.yield_curve
+                for tenor in ["3M", "2Y", "5Y", "10Y", "30Y"]:
+                    if tenor in yc:
+                        macro_lines.append(f"- US Treasury {tenor}: {yc[tenor]:.3f}%")
+                if overview.spread_3m10y is not None:
+                    inv = " ⚠️ INVERTED" if overview.spread_3m10y < 0 else ""
+                    macro_lines.append(f"- 3M-10Y Spread: {overview.spread_3m10y:+.0f}bp{inv}")
+                if overview.spread_2y10y is not None:
+                    inv = " ⚠️ INVERTED" if overview.spread_2y10y < 0 else ""
+                    macro_lines.append(f"- 2Y-10Y Spread: {overview.spread_2y10y:+.0f}bp{inv}")
+                if overview.curve_shape:
+                    macro_lines.append(f"- Curve Shape: {overview.curve_shape}")
+            macro_block = "\n".join(macro_lines)
+
         # 按 region 组装市场概况与板块区块（美股无涨跌家数、板块数据）
         stats_block = ""
         sector_block = ""
@@ -490,13 +561,13 @@ Lagging: {bottom_sectors_text if bottom_sectors_text else "N/A"}"""
                 if not indices_text
                 else ""
             )
-            return f"""You are a professional US/A/H market analyst. Please produce a concise US market recap report based on the data below.
+            return f"""You are a professional macro and equity market analyst. Produce a concise US market daily recap in Chinese (中文) based on the data below.
 
 [Requirements]
-- Output pure Markdown only
-- No JSON
-- No code blocks
-- Use emoji sparingly in headings (at most one per heading)
+- Output pure Markdown only; no JSON, no code blocks
+- Write in Chinese (中文)
+- Use emoji sparingly (at most one per heading)
+- Be direct and data-driven
 
 ---
 
@@ -505,8 +576,10 @@ Lagging: {bottom_sectors_text if bottom_sectors_text else "N/A"}"""
 ## Date
 {overview.date}
 
-## Major Indices
+## Major US Indices
 {indices_placeholder}
+
+{macro_block}
 
 {stats_block}
 
@@ -519,31 +592,28 @@ Lagging: {bottom_sectors_text if bottom_sectors_text else "N/A"}"""
 
 ---
 
-# Output Template (follow this structure)
+# Output Template (strictly follow this structure, write in Chinese)
 
-## {overview.date} US Market Recap
+## 📊 {overview.date} 美股宏观日报
 
-### 1. Market Summary
-(2-3 sentences on overall market performance, index moves, volume)
+### 一、市场总结
+（2-3句话概括今日表现：指数涨跌幅度、市场情绪）
 
-### 2. Index Commentary
-(Analyse S&P 500, Nasdaq, Dow and other major index moves.)
+### 二、宏观指标解读
+（解读 VIX 水平与含义、收益率曲线形态（是否倒挂）、利差变化对股市的影响）
 
-### 3. Fund Flows
-(Interpret volume and flow implications)
+### 三、指数走势
+（分析标普500、纳斯达克、道指的走势驱动因素）
 
-### 4. Sector/Theme Highlights
-(Analyze drivers behind leading/lagging sectors)
+### 四、热点与风险
+（解读新闻中的关键事件，点出市场潜在风险）
 
-### 5. Outlook
-(Short-term view based on price action and news)
-
-### 6. Risk Alerts
-(Key risks to watch)
+### 五、明日展望
+（基于今日数据和新闻，给出短期方向判断与关注点）
 
 ---
 
-Output the report content directly, no extra commentary.
+Output the report directly, no extra commentary.
 """
 
         # A 股场景使用中文提示语

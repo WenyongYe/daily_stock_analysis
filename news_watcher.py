@@ -33,6 +33,7 @@ setup_env()
 
 from src.breaking_news import BreakingNewsWatcher, DEFAULT_INTERVAL_MIN
 from src.macro_monitor import MacroMonitor
+from src.notification import NotificationService
 from src.logging_config import setup_logging
 
 # 宏观指标检查频率（每 N 次新闻检查触发一次，避免过于频繁）
@@ -122,12 +123,21 @@ def main():
     logger = logging.getLogger(__name__)
 
     webhook = os.getenv("FEISHU_WEBHOOK_URL", "")
-    if not webhook:
-        logger.error("未配置 FEISHU_WEBHOOK_URL，请在 .env 中设置")
+
+    # 初始化项目自带多渠道通知服务（支持飞书/Telegram/企微/邮件等）
+    try:
+        notifier = NotificationService()
+        logger.info(f"通知渠道: {[ch.value for ch in notifier._available_channels]}")
+    except Exception as e:
+        logger.warning(f"NotificationService 初始化失败，回退到 Webhook 模式: {e}")
+        notifier = None
+
+    if not webhook and notifier is None:
+        logger.error("未配置任何推送渠道（FEISHU_WEBHOOK_URL 或其他），请在 .env 中设置")
         sys.exit(1)
 
-    news_watcher = BreakingNewsWatcher(feishu_webhook_url=webhook)
-    macro_monitor = MacroMonitor(feishu_webhook_url=webhook)
+    news_watcher = BreakingNewsWatcher(feishu_webhook_url=webhook, notifier=notifier)
+    macro_monitor = MacroMonitor(feishu_webhook_url=webhook, notifier=notifier)
 
     fj_ok = news_watcher._fj.configured
     enable_news = not args.macro_only

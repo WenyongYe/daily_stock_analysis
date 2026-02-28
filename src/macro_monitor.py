@@ -348,8 +348,9 @@ class MacroMonitor:
     宏观指标监控主控
     """
 
-    def __init__(self, feishu_webhook_url: Optional[str] = None):
+    def __init__(self, feishu_webhook_url: Optional[str] = None, notifier=None):
         self._webhook = feishu_webhook_url or os.getenv("FEISHU_WEBHOOK_URL", "")
+        self._notifier = notifier  # 可传入 NotificationService 实例
         self._state = MacroState()
 
     def run_once(self, force_report: bool = False) -> str:
@@ -400,6 +401,10 @@ class MacroMonitor:
         return summary
 
     def _push_feishu(self, text: str) -> bool:
+        # 优先用项目 NotificationService（支持多渠道）
+        if self._notifier is not None:
+            return self._notifier.send(text, email_send_to_all=True)
+        # 回退：直接 Feishu Webhook
         if not self._webhook:
             logger.warning("未配置 FEISHU_WEBHOOK_URL")
             return False
