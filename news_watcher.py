@@ -32,30 +32,47 @@ from src.config import setup_env
 setup_env()
 
 from src.breaking_news import BreakingNewsWatcher, DEFAULT_INTERVAL_MIN
+from src.macro_monitor import MacroMonitor
 from src.logging_config import setup_logging
+
+# 宏观指标检查频率（每 N 次新闻检查触发一次，避免过于频繁）
+MACRO_CHECK_EVERY_N = int(os.getenv("MACRO_CHECK_EVERY_N", "3"))  # 默认每3次新闻检查触发一次宏观检查
 
 
 def parse_args():
-    parser = argparse.ArgumentParser(description="突发财经新闻监控")
+    parser = argparse.ArgumentParser(
+        description="突发财经新闻 + 宏观指标监控",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+示例:
+  python news_watcher.py                   # 定时模式（默认每 10 分钟）
+  python news_watcher.py --once            # 只执行一次
+  python news_watcher.py --batch           # 新闻批量汇总模式
+  python news_watcher.py --macro-only      # 只监控宏观指标
+  python news_watcher.py --macro-report    # 立即推送一次宏观日报
+        """
+    )
     parser.add_argument("--once", action="store_true", help="只执行一次后退出")
     parser.add_argument("--interval", type=int, default=DEFAULT_INTERVAL_MIN,
-                        help=f"检查间隔（分钟，默认 {DEFAULT_INTERVAL_MIN}）")
+                        help=f"新闻检查间隔（分钟，默认 {DEFAULT_INTERVAL_MIN}）")
     parser.add_argument("--batch", action="store_true",
-                        help="批量汇总模式：N 条合并为一条推送")
+                        help="批量汇总模式：N 条新闻合并为一条推送")
+    parser.add_argument("--no-macro", action="store_true",
+                        help="禁用宏观指标监控（只监控新闻）")
+    parser.add_argument("--macro-only", action="store_true",
+                        help="只监控宏观指标，不监控新闻")
+    parser.add_argument("--macro-report", action="store_true",
+                        help="立即推送一次完整宏观日报（包含 VIX + 收益率曲线）")
     parser.add_argument("--debug", action="store_true", help="开启 DEBUG 日志")
     return parser.parse_args()
 
 
-def run_check(watcher: BreakingNewsWatcher, batch_mode: bool = False) -> int:
+def run_news_check(watcher: BreakingNewsWatcher, batch_mode: bool = False) -> int:
+    """执行一次新闻检查，返回推送条数"""
     try:
         if batch_mode:
-            # 批量模式：先收集所有新条目，再一次推送
-            from src.breaking_news import (
-                FinancialJuiceFetcher, RssFetcher, SeenTracker,
-                _dedup_by_title, NEWS_MAX_AGE_HOURS
-            )
+            from src.breaking_news import _dedup_by_title, NEWS_MAX_AGE_HOURS
             from datetime import timezone, timedelta
-            import time as _time
 
             all_items = []
             if watcher._fj.configured:
@@ -86,8 +103,17 @@ def run_check(watcher: BreakingNewsWatcher, batch_mode: bool = False) -> int:
         else:
             return watcher.run_once()
     except Exception as e:
-        logging.getLogger(__name__).error(f"检查异常: {e}", exc_info=True)
+        logging.getLogger(__name__).error(f"新闻检查异常: {e}", exc_info=True)
         return 0
+
+
+def run_macro_check(monitor: MacroMonitor, force_report: bool = False) -> str:
+    """执行一次宏观指标检查"""
+    try:
+        return monitor.run_once(force_report=force_report)
+    except Exception as e:
+        logging.getLogger(__name__).error(f"宏观检查异常: {e}", exc_info=True)
+        return ""
 
 
 def main():
@@ -100,23 +126,54 @@ def main():
         logger.error("未配置 FEISHU_WEBHOOK_URL，请在 .env 中设置")
         sys.exit(1)
 
-    watcher = BreakingNewsWatcher(feishu_webhook_url=webhook)
+    news_watcher = BreakingNewsWatcher(feishu_webhook_url=webhook)
+    macro_monitor = MacroMonitor(feishu_webhook_url=webhook)
 
-    fj_configured = watcher._fj.configured
-    logger.info(f"新闻监控启动 | FinancialJuice={'✓' if fj_configured else '✗（未配置账号）'} | RSS=✓")
-    logger.info(f"模式={'单次' if args.once else f'定时 {args.interval} 分钟'} | 推送={'批量' if args.batch else '逐条'}")
+    fj_ok = news_watcher._fj.configured
+    enable_news = not args.macro_only
+    enable_macro = not args.no_macro
+
+    logger.info(
+        f"监控启动 | 新闻={'✓' if enable_news else '✗'} "
+        f"(FJ={'✓' if fj_ok else '✗未配置'}) | "
+        f"宏观={'✓ (VIX+收益率曲线)' if enable_macro else '✗'}"
+    )
+
+    # --macro-report：立即推送宏观日报后退出
+    if args.macro_report:
+        logger.info("推送宏观日报...")
+        summary = run_macro_check(macro_monitor, force_report=True)
+        print(summary)
+        return
 
     if args.once:
-        count = run_check(watcher, batch_mode=args.batch)
-        logger.info(f"执行完成，推送 {count} 条")
+        if enable_news:
+            count = run_news_check(news_watcher, batch_mode=args.batch)
+            logger.info(f"新闻推送 {count} 条")
+        if enable_macro:
+            run_macro_check(macro_monitor)
         return
 
     # 定时循环
     interval_sec = args.interval * 60
+    news_tick = 0
+
     while True:
-        logger.info(f"[{datetime.now().strftime('%H:%M:%S')}] 开始检查...")
-        count = run_check(watcher, batch_mode=args.batch)
-        logger.info(f"本次推送 {count} 条，下次检查在 {args.interval} 分钟后")
+        now_str = datetime.now().strftime("%H:%M:%S")
+
+        if enable_news:
+            logger.info(f"[{now_str}] 新闻检查...")
+            count = run_news_check(news_watcher, batch_mode=args.batch)
+            logger.info(f"新闻推送 {count} 条")
+
+        if enable_macro:
+            news_tick += 1
+            if news_tick >= MACRO_CHECK_EVERY_N:
+                news_tick = 0
+                logger.info(f"[{now_str}] 宏观指标检查...")
+                run_macro_check(macro_monitor)
+
+        logger.info(f"下次检查在 {args.interval} 分钟后")
         time.sleep(interval_sec)
 
 
