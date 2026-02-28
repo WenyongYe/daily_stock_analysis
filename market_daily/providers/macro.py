@@ -32,17 +32,18 @@ def _fallback_vix() -> Optional[float]:
 
 
 def _fallback_yields() -> dict:
-    """yfinance 降级拉收益率"""
+    """yfinance 降级拉收益率（不再把 ^IRX 误当 2Y）"""
     try:
         import yfinance as yf
         result = {}
-        for sym, key in [("^TNX", "10y"), ("^IRX", "2y"), ("^TYX", "30y")]:
+        # 注意：^IRX 是 13-week bill，不等于 2Y，这里不用于 2Y-10Y 计算
+        for sym, key in [("^TNX", "10Y"), ("^FVX", "5Y"), ("^TYX", "30Y"), ("^IRX", "3M")]:
             try:
                 result[key] = yf.Ticker(sym).fast_info.last_price
-            except:
+            except Exception:
                 pass
         return result
-    except:
+    except Exception:
         return {}
 
 
@@ -93,12 +94,13 @@ class MacroProvider:
                         else:               result["vix_label"] = "✅ 正常"
 
                 if yc is not None:
+                    # macro_monitor 的 spread_* 单位是 bp
                     result["yield_curve"] = {
-                        "rates":        yc.rates if hasattr(yc, 'rates') else {},
-                        "spread_2y10y": yc.spread_2y10y,
-                        "spread_3m10y": yc.spread_3m10y,
-                        "curve_shape":  yc.curve_shape,
-                        "display":      yc.format_display() if hasattr(yc, 'format_display') else "",
+                        "rates":            yc.rates if hasattr(yc, 'rates') else {},
+                        "spread_2y10y_bp":  yc.spread_2y10y,
+                        "spread_3m10y_bp":  yc.spread_3m10y,
+                        "curve_shape":      yc.curve_shape,
+                        "display":          yc.format_display() if hasattr(yc, 'format_display') else "",
                     }
                 print(f"  [MacroProvider] macro_monitor 成功，VIX={vix_val}", file=sys.stderr)
                 return result
@@ -118,15 +120,16 @@ class MacroProvider:
             else:               result["vix_label"] = "✅ 正常"
 
         if yields:
-            y10 = yields.get("10y", 0)
-            y2  = yields.get("2y", 0)
-            spread = (y10 - y2) if (y10 and y2) else None
+            y10 = yields.get("10Y")
+            y5 = yields.get("5Y")
+            spread_5y10y_bp = ((y10 - y5) * 100) if (y10 is not None and y5 is not None) else None
             result["yield_curve"] = {
-                "rates":        yields,
-                "spread_2y10y": spread,
-                "spread_3m10y": None,
-                "curve_shape":  "inverted" if (spread is not None and spread < 0) else "normal",
-                "display":      "",
+                "rates":            yields,
+                "spread_2y10y_bp":  None,
+                "spread_3m10y_bp":  None,
+                "spread_5y10y_bp":  spread_5y10y_bp,
+                "curve_shape":      "unknown",
+                "display":          "",
             }
 
         print(f"  [MacroProvider] yfinance fallback，VIX={vix_val}", file=sys.stderr)

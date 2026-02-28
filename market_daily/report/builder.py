@@ -160,29 +160,36 @@ class ReportBuilder:
 
     def _bonds(self, prices: dict, macro: dict) -> str:
         lines = ["## 五、美债收益率"]
-        for key, label in [("us10y","10年期"),("us2y","2年期")]:
-            d = prices.get(key, {})
-            if d and "error" not in d:
-                p, chg = d["price"], d["chg"]
-                note = "↓ 避险买盘" if chg < -0.5 else ("↑ 通胀预期" if chg > 0.5 else "")
-                lines.append(f"- **{label}国债**: {p:.3f}%  {_sign(chg)} {chg:+.2f}%  {note}")
+        # 10Y 使用 yfinance 实时涨跌，2Y 优先用 macro_monitor 的可靠值
+        d10 = prices.get("us10y", {})
+        if d10 and "error" not in d10:
+            p, chg = d10["price"], d10["chg"]
+            note = "↓ 避险买盘" if chg < -0.5 else ("↑ 通胀预期" if chg > 0.5 else "")
+            lines.append(f"- **10年期国债**: {p:.3f}%  {_sign(chg)} {chg:+.2f}%  {note}")
 
-        # 收益率曲线形态（优先用 macro provider）
+        rates = (macro.get("yield_curve", {}) or {}).get("rates", {}) or {}
+        if "2Y" in rates:
+            lines.append(f"- **2年期国债**: {float(rates['2Y']):.3f}%  （来自 Treasury 曲线）")
+        else:
+            d3m = prices.get("us2y", {})
+            if d3m and "error" not in d3m:
+                lines.append(f"- **3个月国债(替代)**: {d3m['price']:.3f}%  {_sign(d3m['chg'])} {d3m['chg']:+.2f}%")
+
+        # 收益率曲线形态（优先用 macro provider；单位使用 bp）
         yc = macro.get("yield_curve", {})
-        spread = yc.get("spread_2y10y")
-        if spread is None:
-            # 从 prices 计算
-            us2y_p  = prices.get("us2y",  {}).get("price", 0)
-            us10y_p = prices.get("us10y", {}).get("price", 0)
-            if us2y_p and us10y_p:
-                spread = us10y_p - us2y_p
+        spread_2y10y_bp = yc.get("spread_2y10y_bp")
+        spread_5y10y_bp = yc.get("spread_5y10y_bp")
 
-        if spread is not None:
-            invert = "  🚨 倒挂（历史衰退前兆）" if spread < 0 else ""
-            lines.append(f"- **2Y-10Y 利差**: {spread:+.3f}%{invert}")
+        if spread_2y10y_bp is not None:
+            invert = "  🚨 倒挂（历史衰退前兆）" if spread_2y10y_bp < 0 else ""
+            lines.append(f"- **2Y-10Y 利差**: {spread_2y10y_bp:+.1f}bp{invert}")
+        elif spread_5y10y_bp is not None:
+            lines.append(f"- **5Y-10Y 利差(替代)**: {spread_5y10y_bp:+.1f}bp")
+        else:
+            lines.append("- **2Y-10Y 利差**: N/A（缺少2Y可靠数据）")
 
         curve_shape = yc.get("curve_shape", "")
-        if curve_shape == "inverted":
+        if "倒挂" in str(curve_shape).lower() or "inverted" in str(curve_shape).lower():
             lines.append("- ⚠️ 收益率曲线倒挂状态持续")
 
         return "\n".join(lines)

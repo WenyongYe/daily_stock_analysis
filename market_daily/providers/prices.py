@@ -37,7 +37,7 @@ SYMBOLS: dict[str, tuple[str, str, str]] = {
     "dxy":     ("DX=F",     "美元指数 DXY",     "fx"),
     # 债券
     "us10y":   ("^TNX",     "美国10Y",          "bond"),
-    "us2y":    ("^IRX",     "美国2Y",           "bond"),
+    "us2y":    ("^IRX",     "美国3M(替代)",      "bond"),
 }
 
 
