@@ -112,12 +112,34 @@ class ReportBuilder:
             lines.append(_price_row(label, key, prices))
 
         # VIX（优先用 macro provider 的值）
-        vix_val   = macro.get("vix")
+        vix_val = macro.get("vix")
         vix_label = macro.get("vix_label", "")
-        vix_d     = prices.get("vix", {})
-        if vix_val and "error" not in vix_d:
-            chg = vix_d.get("chg", 0)
-            lines.append(f"- **VIX 恐慌指数**: {vix_val:.2f}  {_sign(chg)} {chg:+.2f}%  {vix_label}")
+        vix_d = prices.get("vix", {})
+        if vix_val:
+            # 日变化：优先 macro 的计算，其次 yfinance fast_info 变化
+            day_chg = macro.get("vix_day_change_pct")
+            if day_chg is None and vix_d and "error" not in vix_d:
+                day_chg = vix_d.get("chg", 0)
+
+            week_chg = macro.get("vix_week_change_pct")
+            last_week_close = macro.get("vix_last_week_close")
+
+            # VIX 上涨是风险上升，图标与普通资产相反
+            if day_chg is None:
+                day_part = "N/A"
+            else:
+                day_icon = "🔴" if day_chg > 0 else "🟢"
+                day_part = f"{day_icon} {day_chg:+.2f}%"
+
+            week_part = ""
+            if week_chg is not None:
+                week_icon = "🔴" if week_chg > 0 else "🟢"
+                if last_week_close is not None:
+                    week_part = f" | 周比 {week_icon} {week_chg:+.2f}%（上周收盘 {last_week_close:.2f}）"
+                else:
+                    week_part = f" | 周比 {week_icon} {week_chg:+.2f}%"
+
+            lines.append(f"- **VIX 恐慌指数**: {vix_val:.2f}  {day_part}{week_part}  {vix_label}")
         return "\n".join(lines)
 
     def _intl_equity(self, prices: dict) -> str:
