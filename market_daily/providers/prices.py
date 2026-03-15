@@ -38,6 +38,9 @@ SYMBOLS: dict[str, tuple[str, str, str]] = {
     # 债券
     "us10y":   ("^TNX",     "美国10Y",          "bond"),
     "us2y":    ("^IRX",     "美国3M(替代)",      "bond"),
+    # 加密货币
+    "btc":     ("BTC-USD",  "Bitcoin",          "crypto"),
+    "eth":     ("ETH-USD",  "Ethereum",         "crypto"),
 }
 
 

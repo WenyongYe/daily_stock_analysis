@@ -15,7 +15,7 @@ class ThemeResult:
     watch:  list[str]     # 后续关注点
 
 
-def analyze_theme(prices: dict, macro: dict) -> ThemeResult:
+def analyze_theme(prices: dict, macro: dict, calendar: list[dict] | None = None) -> ThemeResult:
     """
     分析市场主题
 
@@ -48,7 +48,7 @@ def analyze_theme(prices: dict, macro: dict) -> ThemeResult:
     vix_price = macro.get("vix") or get_price("vix")
     vix_chg   = get_chg("vix")
     yc        = macro.get("yield_curve", {})
-    spread    = yc.get("spread_2y10y")
+    spread_bp = yc.get("spread_2y10y_bp")
 
     # ── 美股走势 ──
     if sp_chg < -1.0:
@@ -110,10 +110,10 @@ def analyze_theme(prices: dict, macro: dict) -> ThemeResult:
         themes.append("美债收益率上升（通胀/紧缩预期升温）")
 
     # ── 收益率曲线 ──
-    if spread is not None:
-        if spread < 0:
-            themes.append(f"收益率曲线倒挂（2Y-10Y={spread:+.3f}%）🚨 历史衰退信号")
-            watch.append(f"🔍 倒挂深化？当前 2Y-10Y={spread:+.3f}%")
+    if spread_bp is not None:
+        if spread_bp < 0:
+            themes.append(f"收益率曲线倒挂（2Y-10Y={float(spread_bp):+.1f}bp）🚨 历史衰退信号")
+            watch.append(f"🔍 倒挂深化？当前 2Y-10Y={float(spread_bp):+.1f}bp")
 
     # ── 美欧分化 ──
     if sp_chg < -0.3 and stoxx_chg > 0.1:
@@ -140,10 +140,22 @@ def analyze_theme(prices: dict, macro: dict) -> ThemeResult:
         regime = "neutral"
         label  = "➡️ 中性混合（多空交织）"
 
-    # 通用后续关注
-    watch += [
-        "🔍 美联储：关注FOMC委员发言信号（鹰/鸽）",
-        "🔍 本周关键数据：NFP就业报告、CPI通胀数据",
-    ]
+    # 动态后续关注：从 calendar 提取待公布事件
+    if calendar:
+        pending_events = [
+            e for e in calendar
+            if not e.get("actual", "").strip() or e["actual"].strip() == "****"
+        ]
+        for e in pending_events[:3]:
+            event_name = e.get("event", "")
+            cur = e.get("currency", "")
+            date = e.get("date", "")
+            forecast = e.get("forecast", "")
+            hint = f"（预期 {forecast}）" if forecast else ""
+            watch.append(f"🔍 {date} [{cur}] {event_name}{hint}")
+
+    # 兜底：calendar 为空或无待公布事件时保留通用关注
+    if not any("🔍" in w and "[" in w for w in watch):
+        watch.append("🔍 关注本周剩余宏观数据公布及央行官员发言")
 
     return ThemeResult(regime=regime, label=label, themes=themes, watch=list(dict.fromkeys(watch)))

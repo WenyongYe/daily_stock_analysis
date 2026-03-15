@@ -8,8 +8,10 @@ import sys
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
-from .providers  import PriceProvider, MacroProvider, NewsProvider, CalendarProvider
+from .providers  import PriceProvider, MacroProvider, CalendarProvider
+from .providers.news_digest import NewsDigestPipeline
 from .report     import ReportBuilder
+from .report.narrative import generate_narrative, generate_annotations
 from .delivery   import FeishuDelivery
 
 
@@ -32,11 +34,11 @@ def run(
     if verbose:
         print("🔄 正在并发拉取数据...", file=sys.stderr)
 
-    # 并发拉取四路数据
+    # 并发拉取四路数据（新闻使用 NewsDigest pipeline：50-100条→LLM精选~10条）
     providers = {
         "prices":   PriceProvider().fetch,
         "macro":    MacroProvider().fetch,
-        "news":     NewsProvider().fetch,
+        "news":     NewsDigestPipeline().run,
         "calendar": CalendarProvider().fetch,
     }
 
@@ -49,14 +51,38 @@ def run(
                 results[key] = f.result()
             except Exception as e:
                 print(f"  [{key}] 异常: {e}", file=sys.stderr)
-                results[key] = {} if key in ("prices", "macro") else []
+                results[key] = {} if key in ("prices", "macro") else ([] if key != "news" else "")
+
+    # LLM 综合叙事（行情+新闻关联分析）
+    from .report.theme import analyze_theme
+    prices_data = results.get("prices", {})
+    macro_data = results.get("macro", {})
+    news_data = results.get("news", "")
+    calendar_data = results.get("calendar", [])
+
+    theme = analyze_theme(prices_data, macro_data, calendar_data)
+
+    # LLM 叙事 + AI 注释并发生成
+    narrative = None
+    annotations = {}
+    with ThreadPoolExecutor(max_workers=2) as ex:
+        fut_narr = ex.submit(
+            generate_narrative, prices_data, news_data, theme.label, theme.themes
+        )
+        fut_ann = ex.submit(
+            generate_annotations, prices_data, calendar_data, news_data
+        )
+        narrative = fut_narr.result()
+        annotations = fut_ann.result()
 
     # 生成报告
     report = ReportBuilder().build(
-        prices   = results.get("prices",   {}),
-        macro    = results.get("macro",    {}),
-        news     = results.get("news",     []),
-        calendar = results.get("calendar", []),
+        prices      = prices_data,
+        macro       = macro_data,
+        news        = news_data,
+        calendar    = calendar_data,
+        narrative   = narrative,
+        annotations = annotations,
     )
 
     # 输出

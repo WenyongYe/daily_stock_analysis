@@ -22,26 +22,13 @@ def _fmt(d: dict, decimals: int = 2, prefix: str = "") -> str:
     return f"{prefix}{p:,.{decimals}f}  {_sign(chg)} {chg:+.2f}%"
 
 
-def _alert(key: str, d: dict) -> str:
-    """特殊预警标注"""
-    if not d or "error" in d:
-        return ""
-    chg = d.get("chg", 0)
-    p   = d.get("price", 0)
-    alerts = {
-        "gold":   (abs(chg) >= 1.5, f"  ⚠️ 大幅波动 {chg:+.1f}%"),
-        "brent":  (chg > 2,         f"  ⚠️ 油价大涨（地缘/OPEC）"),
-        "vix":    (p >= 25,         f"  🚨 恐慌区间"),
-    }
-    if key in alerts:
-        cond, msg = alerts[key]
-        return msg if cond else ""
-    return ""
-
-
-def _price_row(label: str, key: str, prices: dict, decimals: int = 2, prefix: str = "") -> str:
+def _price_row(label: str, key: str, prices: dict, decimals: int = 2,
+               prefix: str = "", annotations: dict | None = None) -> str:
     d = prices.get(key, {})
-    return f"- **{label}**: {_fmt(d, decimals, prefix)}{_alert(key, d)}"
+    ann = ""
+    if annotations and key in annotations:
+        ann = f"  💬 {annotations[key]}"
+    return f"- **{label}**: {_fmt(d, decimals, prefix)}{ann}"
 
 
 class ReportBuilder:
@@ -51,34 +38,42 @@ class ReportBuilder:
         self,
         prices:   dict,
         macro:    dict,
-        news:     list[dict],
+        news,
         calendar: list[dict],
+        narrative: str | None = None,
+        annotations: dict | None = None,
     ) -> str:
         """
         生成完整 Markdown 日报
 
         Args:
-            prices:   PriceProvider.fetch() 结果
-            macro:    MacroProvider.fetch() 结果
-            news:     NewsProvider.fetch() 结果
-            calendar: CalendarProvider.fetch() 结果
+            prices:      PriceProvider.fetch() 结果
+            macro:       MacroProvider.fetch() 结果
+            news:        NewsDigestPipeline.run() 结果
+            calendar:    CalendarProvider.fetch() 结果
+            narrative:   LLM 综合叙事（可选）
+            annotations: LLM 数据点注释 {key: "解读"}（可选）
 
         Returns:
             str: 完整 Markdown 文本
         """
+        self._ann = annotations or {}
+
         now      = datetime.now(timezone.utc)
         date_str = now.strftime("%Y-%m-%d")
         time_str = now.strftime("%H:%M UTC")
 
-        theme = analyze_theme(prices, macro)
+        theme = analyze_theme(prices, macro, calendar)
 
         sections = [
             self._header(date_str, time_str),
             self._theme_section(theme),
+            self._narrative_section(narrative),
             self._us_equity(prices, macro),
             self._intl_equity(prices),
             self._commodities(prices),
             self._fx(prices),
+            self._crypto(prices),
             self._bonds(prices, macro),
             self._calendar(calendar),
             self._news(news),
@@ -93,7 +88,7 @@ class ReportBuilder:
     def _header(self, date_str: str, time_str: str) -> str:
         return (
             f"# 📊 金融市场日报 · {date_str}\n"
-            f"**{time_str}** | 数据源: yfinance · ForexFactory · FT / Tavily\n\n"
+            f"**{time_str}** | 数据源: FRED/Treasury(利率) · yfinance(行情) · ForexFactory · FT / Tavily\n\n"
             "---"
         )
 
@@ -106,10 +101,15 @@ class ReportBuilder:
             lines.append("- 市场整体平稳，无显著异动信号")
         return "\n".join(lines)
 
+    def _narrative_section(self, narrative: str | None) -> str:
+        if not narrative:
+            return ""
+        return f"> 💡 {narrative}"
+
     def _us_equity(self, prices: dict, macro: dict) -> str:
         lines = ["---", "", "## 一、美股指数"]
         for key, label in [("sp500","S&P 500"),("nasdaq","NASDAQ"),("dji","Dow Jones"),("russell","Russell 2000")]:
-            lines.append(_price_row(label, key, prices))
+            lines.append(_price_row(label, key, prices, annotations=self._ann))
 
         # VIX（优先用 macro provider 的值）
         vix_val = macro.get("vix")
@@ -139,7 +139,10 @@ class ReportBuilder:
                 else:
                     week_part = f" | 周比 {week_icon} {week_chg:+.2f}%"
 
-            lines.append(f"- **VIX 恐慌指数**: {vix_val:.2f}  {day_part}{week_part}  {vix_label}")
+            vix_ann = ""
+            if "vix" in self._ann:
+                vix_ann = f"  💬 {self._ann['vix']}"
+            lines.append(f"- **VIX 恐慌指数**: {vix_val:.2f}  {day_part}{week_part}  {vix_label}{vix_ann}")
         return "\n".join(lines)
 
     def _intl_equity(self, prices: dict) -> str:
@@ -147,7 +150,7 @@ class ReportBuilder:
         for key, label in [("stoxx","Euro STOXX 600"),("dax","DAX"),("ftse","FTSE 100"),("nikkei","Nikkei 225"),("hsi","恒生指数")]:
             d = prices.get(key, {})
             if d and "error" not in d:
-                lines.append(_price_row(label, key, prices))
+                lines.append(_price_row(label, key, prices, annotations=self._ann))
         return "\n".join(lines)
 
     def _commodities(self, prices: dict) -> str:
@@ -163,7 +166,7 @@ class ReportBuilder:
         for key, label, dec, pre in specs:
             d = prices.get(key, {})
             if d and "error" not in d:
-                lines.append(_price_row(label, key, prices, dec, pre))
+                lines.append(_price_row(label, key, prices, dec, pre, self._ann))
         return "\n".join(lines)
 
     def _fx(self, prices: dict) -> str:
@@ -177,38 +180,79 @@ class ReportBuilder:
         for key, label, dec in specs:
             d = prices.get(key, {})
             if d and "error" not in d:
-                lines.append(_price_row(label, key, prices, dec))
+                lines.append(_price_row(label, key, prices, dec, annotations=self._ann))
+        return "\n".join(lines)
+
+    def _crypto(self, prices: dict) -> str:
+        btc = prices.get("btc", {})
+        eth = prices.get("eth", {})
+        if (not btc or "error" in btc) and (not eth or "error" in eth):
+            return ""
+        lines = ["## 加密货币"]
+        if btc and "error" not in btc:
+            lines.append(_price_row("BTC", "btc", prices, 0, "$", self._ann))
+        if eth and "error" not in eth:
+            lines.append(_price_row("ETH", "eth", prices, 2, "$", self._ann))
         return "\n".join(lines)
 
     def _bonds(self, prices: dict, macro: dict) -> str:
         lines = ["## 五、美债收益率"]
-        # 10Y 使用 yfinance 实时涨跌，2Y 优先用 macro_monitor 的可靠值
-        d10 = prices.get("us10y", {})
-        if d10 and "error" not in d10:
-            p, chg = d10["price"], d10["chg"]
-            note = "↓ 避险买盘" if chg < -0.5 else ("↑ 通胀预期" if chg > 0.5 else "")
-            lines.append(f"- **10年期国债**: {p:.3f}%  {_sign(chg)} {chg:+.2f}%  {note}")
 
-        rates = (macro.get("yield_curve", {}) or {}).get("rates", {}) or {}
-        if "2Y" in rates:
-            lines.append(f"- **2年期国债**: {float(rates['2Y']):.3f}%  （来自 Treasury 曲线）")
+        yc = macro.get("yield_curve", {}) or {}
+        rates = yc.get("rates", {}) or {}
+        source = yc.get("source") or "unknown"
+        observation_date = yc.get("observation_date") or "N/A"
+        stale_days = yc.get("stale_days")
+
+        if "10Y" in rates:
+            lines.append(f"- **10年期国债**: {float(rates['10Y']):.3f}%")
         else:
-            d3m = prices.get("us2y", {})
-            if d3m and "error" not in d3m:
-                lines.append(f"- **3个月国债(替代)**: {d3m['price']:.3f}%  {_sign(d3m['chg'])} {d3m['chg']:+.2f}%")
+            lines.append("- **10年期国债**: N/A")
 
-        # 收益率曲线形态（优先用 macro provider；单位使用 bp）
-        yc = macro.get("yield_curve", {})
+        if "2Y" in rates:
+            lines.append(f"- **2年期国债**: {float(rates['2Y']):.3f}%")
+        else:
+            lines.append("- **2年期国债**: N/A")
+
+        if "3M" in rates:
+            lines.append(f"- **3个月国债**: {float(rates['3M']):.3f}%")
+
         spread_2y10y_bp = yc.get("spread_2y10y_bp")
-        spread_5y10y_bp = yc.get("spread_5y10y_bp")
-
         if spread_2y10y_bp is not None:
             invert = "  🚨 倒挂（历史衰退前兆）" if spread_2y10y_bp < 0 else ""
-            lines.append(f"- **2Y-10Y 利差**: {spread_2y10y_bp:+.1f}bp{invert}")
-        elif spread_5y10y_bp is not None:
-            lines.append(f"- **5Y-10Y 利差(替代)**: {spread_5y10y_bp:+.1f}bp")
+            lines.append(f"- **2Y-10Y 利差**: {float(spread_2y10y_bp):+.1f}bp{invert}")
         else:
-            lines.append("- **2Y-10Y 利差**: N/A（缺少2Y可靠数据）")
+            lines.append("- **2Y-10Y 利差**: N/A（缺少同源2Y/10Y）")
+
+        # 同口径闭合校验：spread 应等于 (10Y - 2Y) * 100
+        if "10Y" in rates and "2Y" in rates and spread_2y10y_bp is not None:
+            calc_bp = round((float(rates["10Y"]) - float(rates["2Y"])) * 100, 1)
+            diff_bp = round(calc_bp - float(spread_2y10y_bp), 2)
+            if abs(diff_bp) <= 1.0:
+                lines.append(f"- ✅ 口径校验: 10Y-2Y={calc_bp:+.1f}bp，与展示一致（Δ={diff_bp:+.2f}bp）")
+            else:
+                lines.append(f"- ⚠️ 口径校验失败: 10Y-2Y={calc_bp:+.1f}bp，展示={float(spread_2y10y_bp):+.1f}bp（Δ={diff_bp:+.2f}bp）")
+
+        consistency = yc.get("consistency") or {}
+        if consistency and consistency.get("diff_bp") is not None:
+            passed = consistency.get("passed", False)
+            icon = "✅" if passed else "⚠️"
+            lines.append(f"- {icon} 内部一致性: diff={float(consistency['diff_bp']):+.2f}bp")
+
+        validation = yc.get("validation") or {}
+        if validation.get("matched_date"):
+            max_abs_diff_bp = validation.get("max_abs_diff_bp")
+            if max_abs_diff_bp is None:
+                lines.append("- ✅ Treasury 对账: 同日可比，差值 N/A")
+            else:
+                lines.append(f"- ✅ Treasury 对账: 同日最大偏差 {float(max_abs_diff_bp):.1f}bp")
+        elif validation:
+            treasury_date = validation.get("treasury_observation_date")
+            if treasury_date:
+                lines.append(f"- ℹ️ Treasury 对账: 日期未对齐（Treasury={treasury_date}）")
+
+        stale_text = f" | stale={stale_days}d" if stale_days is not None else ""
+        lines.append(f"- **口径标注**: source={source} | observation_date={observation_date}{stale_text}")
 
         curve_shape = yc.get("curve_shape", "")
         if "倒挂" in str(curve_shape).lower() or "inverted" in str(curve_shape).lower():
@@ -217,32 +261,71 @@ class ReportBuilder:
         return "\n".join(lines)
 
     def _calendar(self, events: list[dict]) -> str:
-        lines = ["---", "", "## 六、本周重要宏观事件（高影响）"]
+        lines = ["---", "", "## 六、本周宏观事件"]
         if not events:
             lines.append("*本周暂无高影响事件数据*")
             return "\n".join(lines)
 
-        lines += [
-            "",
-            "| 日期 | 时间 | 货币 | 事件 | 实际 | 预期 | 前值 | 解读 |",
-            "|------|------|------|------|------|------|------|------|",
+        # 过滤：只保留有实际数据的事件（actual 非空且非 ****）
+        valuable = [
+            e for e in events
+            if e.get("actual", "").strip() and e["actual"].strip() != "****"
         ]
-        for e in events:
-            sig = e.get("signal", "")
-            lines.append(
-                f"| {e['date']} | {e['time']} | {e['currency']} "
-                f"| {e['event']} | **{e['actual']}** | {e['forecast']} | {e['previous']} | {sig} |"
-            )
+        # 以及未来待公布的（actual 为空的也保留，标记"待公布"）
+        pending = [
+            e for e in events
+            if not e.get("actual", "").strip() or e["actual"].strip() == "****"
+        ]
+
+        if not valuable and not pending:
+            lines.append("*本周暂无高影响事件数据*")
+            return "\n".join(lines)
+
+        if valuable:
+            lines += [
+                "",
+                "**已公布数据：**",
+                "",
+                "| 日期 | 货币 | 事件 | 实际 | 预期 | 前值 | AI解读 |",
+                "|------|------|------|------|------|------|--------|",
+            ]
+            for e in valuable:
+                # 优先用 AI 注释，回退到规则信号
+                ann_key = f"{e['currency']}_{e['event']}"
+                sig = self._ann.get(ann_key, "") or e.get("signal", "")
+                lines.append(
+                    f"| {e['date']} | {e['currency']} "
+                    f"| {e['event']} | **{e['actual']}** | {e['forecast']} | {e['previous']} | {sig} |"
+                )
+
+        if pending:
+            lines += ["", "**待公布事件：**"]
+            for e in pending[:6]:
+                lines.append(f"- {e['date']} {e['time']} [{e['currency']}] {e['event']}（预期: {e.get('forecast', 'N/A')}）")
+
         return "\n".join(lines)
 
-    def _news(self, items: list[dict]) -> str:
-        from ..providers.news import CATEGORY_ORDER
+    def _news(self, news_data) -> str:
         lines = ["---", "", "## 七、重要市场新闻"]
-        if not items:
+        if not news_data:
             lines.append("*新闻源暂时无法访问*")
             return "\n".join(lines)
 
-        # 按 category 分组
+        # NewsDigestPipeline 返回 str（LLM 中文摘要）或 list（回退）
+        if isinstance(news_data, str):
+            # LLM 精选的中文分类摘要，直接嵌入
+            lines.append(news_data)
+            return "\n".join(lines)
+
+        if isinstance(news_data, list) and news_data and isinstance(news_data[0], str):
+            # 回退模式：英文标题列表
+            for i, title in enumerate(news_data, 1):
+                lines.append(f"{i}. {title}")
+            return "\n".join(lines)
+
+        # 兼容旧格式：list[dict]（NewsProvider 直接返回）
+        from ..providers.news import CATEGORY_ORDER
+        items = news_data
         groups: dict[str, list[dict]] = {}
         for item in items:
             cat = item.get("category", "其他")

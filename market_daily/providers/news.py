@@ -59,6 +59,15 @@ SEARCH_QUERIES: list[tuple[str, str]] = [
     ("AI semiconductor NVIDIA Apple Microsoft earnings surprise today", "科技行业"),
 ]
 
+# 扩展查询词（用于 NewsDigest pipeline，覆盖更多领域）
+SEARCH_QUERIES_EXTENDED: list[tuple[str, str]] = SEARCH_QUERIES + [
+    ("European stock market ECB DAX STOXX euro zone economy today", "欧亚市场"),
+    ("Asia market Nikkei Hang Seng BOJ China economy stimulus today", "欧亚市场"),
+    ("corporate earnings revenue M&A IPO bankruptcy major companies today", "企业动态"),
+    ("Bitcoin crypto digital currency regulation SEC ETF today", "加密货币"),
+    ("bond yield treasury curve inversion credit spread fixed income today", "债券外汇"),
+]
+
 # 主题分类关键词（小写匹配）
 CATEGORY_RULES = {
     "美股动态": [
@@ -81,6 +90,22 @@ CATEGORY_RULES = {
         "ai", "tech", "nvidia", "apple", "microsoft", "tesla", "semiconductor", "chip",
         "google", "amazon", "meta", "openai"
     ],
+    "欧亚市场": [
+        "ecb", "boj", "dax", "stoxx", "nikkei", "hang seng", "ftse", "shanghai",
+        "china market", "europe market", "asia market", "euro zone", "stimulus"
+    ],
+    "企业动态": [
+        "earnings", "revenue", "profit", "m&a", "merger", "acquisition", "ipo",
+        "bankruptcy", "layoff", "restructur", "dividend", "buyback"
+    ],
+    "加密货币": [
+        "bitcoin", "crypto", "ethereum", "btc", "digital currency", "stablecoin",
+        "defi", "blockchain", "sec crypto", "crypto etf"
+    ],
+    "债券外汇": [
+        "bond", "treasury", "yield curve", "inversion", "credit spread",
+        "forex", "dollar index", "currency", "fixed income"
+    ],
 }
 
 # 分类展示顺序和 emoji
@@ -90,6 +115,10 @@ CATEGORY_ORDER = [
     ("美股动态", "📈"),
     ("大宗商品", "⛽"),
     ("科技行业", "💻"),
+    ("欧亚市场", "🌏"),
+    ("企业动态", "🏢"),
+    ("加密货币", "₿"),
+    ("债券外汇", "💵"),
     ("其他", "📌"),
 ]
 
@@ -106,6 +135,7 @@ _SKIP_URL_PATTERNS = [
 
 # 来源/站点权重（可信度+时效）
 SOURCE_WEIGHTS = {
+    "FirstSquawk": 3.5,
     "FinancialJuice": 3.2,
     "Reuters": 2.8,
     "FT": 2.6,
@@ -135,7 +165,11 @@ CATEGORY_WEIGHTS = {
     "央行政策": 2.6,
     "美股动态": 2.0,
     "大宗商品": 1.8,
+    "欧亚市场": 1.6,
+    "企业动态": 1.4,
     "科技行业": 1.4,
+    "债券外汇": 1.2,
+    "加密货币": 1.0,
     "其他": 0.8,
 }
 
@@ -163,11 +197,16 @@ MAX_PER_CATEGORY = {
     "美股动态": 4,
     "大宗商品": 3,
     "科技行业": 2,
+    "欧亚市场": 3,
+    "企业动态": 3,
+    "加密货币": 2,
+    "债券外汇": 2,
     "其他": 2,
 }
 MIN_IMPORTANCE_SCORE = float(os.getenv("MARKET_NEWS_MIN_SCORE", "2.2"))
 
 FT_URL = "https://r.jina.ai/https://www.ft.com/markets"
+REUTERS_URL = "https://r.jina.ai/https://www.reuters.com/markets/us/"
 JINA_HEADERS = {"Accept": "text/markdown", "X-No-Cache": "true"}
 
 
@@ -243,8 +282,8 @@ def _score_item(item: dict) -> float:
     if any(k in text for k in GEO_KEYWORDS):
         score += 1.4
 
-    # 标题过短通常是导航页/噪音
-    if len(title.strip()) < 24:
+    # 标题过短通常是导航页/噪音（FirstSquawk 推文本身就是短标题，豁免）
+    if len(title.strip()) < 24 and source != "FirstSquawk":
         score -= 0.6
 
     return round(score, 3)
@@ -320,6 +359,31 @@ def _fetch_ft_headlines() -> list[dict]:
         return results[:10]
     except Exception as e:
         print(f"  [NewsProvider] FT 抓取失败: {e}", file=sys.stderr)
+        return []
+
+
+def _fetch_reuters_headlines() -> list[dict]:
+    """从 Reuters Markets 抓取标题（Jina Reader）"""
+    try:
+        r = requests.get(REUTERS_URL, headers=JINA_HEADERS, timeout=20)
+        raw = re.findall(r'\[([^\]]{20,})\]\(https://www\.reuters\.com/[^\)]+\)', r.text)
+        seen = set()
+        results = []
+        for title in raw:
+            title = title.strip()
+            if title in seen or len(title) < 24:
+                continue
+            seen.add(title)
+            results.append({
+                "title": title,
+                "url": "",
+                "snippet": "",
+                "source": "Reuters",
+                "published": None,
+            })
+        return results[:15]
+    except Exception as e:
+        print(f"  [NewsProvider] Reuters 抓取失败: {e}", file=sys.stderr)
         return []
 
 
