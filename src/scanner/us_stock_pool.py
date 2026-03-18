@@ -79,7 +79,7 @@ class USStockPool:
 
     def get_tradable_stocks(self) -> List[str]:
         """Return only individual stocks (exclude ETFs/indices)."""
-        etf_set = set(SECTOR_ETFS.values()) | {"SPY", "QQQ"}
+        etf_set = set(SECTOR_ETFS.values()) | {"SPY", "QQQ", "SOXX"}
         return [s for s in self.get_stocks() if s not in etf_set]
 
     def get_sector_etfs(self) -> List[str]:
