@@ -63,12 +63,101 @@ def parse_args():
     parser.add_argument("--no-notify", action="store_true", help="Skip push notifications")
     parser.add_argument("--no-llm", action="store_true", help="Skip LLM report generation")
     parser.add_argument("--no-options", action="store_true", help="Skip options analysis")
+    parser.add_argument("--demo", action="store_true", help="Use mock data (demo mode, no network needed)")
     parser.add_argument("--debug", action="store_true", help="Debug mode")
     return parser.parse_args()
 
 
-def fetch_stock_data(symbol: str, lookback_days: int = 60) -> Optional[pd.DataFrame]:
-    """Fetch OHLCV data for a US stock using yfinance."""
+def generate_mock_data(symbol: str, lookback_days: int = 60) -> pd.DataFrame:
+    """Generate realistic mock OHLCV data for demo/testing when yfinance is unavailable."""
+    import numpy as np
+
+    # Realistic base prices and volumes for well-known stocks
+    stock_profiles = {
+        "NVDA": {"base": 125.0, "vol": 45_000_000, "drift": 0.002, "volatility": 0.025},
+        "TSLA": {"base": 260.0, "vol": 55_000_000, "drift": 0.001, "volatility": 0.030},
+        "AAPL": {"base": 195.0, "vol": 50_000_000, "drift": 0.001, "volatility": 0.015},
+        "AMD":  {"base": 155.0, "vol": 40_000_000, "drift": 0.0015, "volatility": 0.022},
+        "META": {"base": 510.0, "vol": 20_000_000, "drift": 0.0012, "volatility": 0.020},
+        "MSFT": {"base": 420.0, "vol": 22_000_000, "drift": 0.001, "volatility": 0.014},
+        "GOOGL": {"base": 165.0, "vol": 25_000_000, "drift": 0.001, "volatility": 0.016},
+        "AMZN": {"base": 195.0, "vol": 35_000_000, "drift": 0.001, "volatility": 0.018},
+    }
+
+    profile = stock_profiles.get(symbol, {"base": 100.0, "vol": 10_000_000, "drift": 0.001, "volatility": 0.020})
+    np.random.seed(hash(symbol) % 2**31)
+
+    dates = pd.date_range(end=datetime.now(), periods=lookback_days, freq="B")
+    returns = np.random.normal(profile["drift"], profile["volatility"], lookback_days)
+
+    # Add realistic trend patterns per stock
+    sym_patterns = {
+        "NVDA": "breakout",   # breakout above resistance with volume
+        "TSLA": "pullback",   # pullback to MA20 support
+        "AMD": "divergence",  # price up but volume declining
+        "META": "consolidation",  # tight range then expansion
+    }
+    pattern = sym_patterns.get(symbol, "pullback")
+
+    if pattern == "breakout":
+        # Consolidation then strong breakout
+        returns[-15:-5] = np.random.normal(0.001, profile["volatility"] * 0.5, 10)  # tight range
+        returns[-5:-2] = np.random.normal(0.015, profile["volatility"], 3)  # breakout move
+        returns[-2:] = np.random.normal(0.003, profile["volatility"] * 0.6, 2)  # hold above
+    elif pattern == "pullback":
+        returns[-12:-7] = np.random.normal(0.008, profile["volatility"], 5)  # rally
+        returns[-7:-3] = np.random.normal(-0.006, profile["volatility"] * 0.6, 4)  # pullback
+        returns[-3:] = np.random.normal(0.003, profile["volatility"] * 0.5, 3)  # stabilize
+    elif pattern == "divergence":
+        returns[-10:] = np.random.normal(0.004, profile["volatility"], 10)  # grind up
+    else:
+        returns[-10:-3] = np.random.normal(0.0, profile["volatility"] * 0.4, 7)  # tight
+        returns[-3:] = np.random.normal(0.012, profile["volatility"], 3)  # expansion
+
+    closes = [profile["base"]]
+    for r in returns[1:]:
+        closes.append(closes[-1] * (1 + r))
+    closes = np.array(closes)
+
+    # Generate OHLV from close
+    highs = closes * (1 + np.abs(np.random.normal(0.005, 0.003, lookback_days)))
+    lows = closes * (1 - np.abs(np.random.normal(0.005, 0.003, lookback_days)))
+    opens = lows + (highs - lows) * np.random.uniform(0.3, 0.7, lookback_days)
+
+    # Volume: base + noise, with a spike during pullback
+    volumes = np.random.normal(profile["vol"], profile["vol"] * 0.3, lookback_days).astype(int)
+    volumes = np.clip(volumes, profile["vol"] // 5, None)
+    if pattern == "breakout":
+        volumes[-5:-2] = (np.array([2.5, 3.0, 2.2]) * profile["vol"]).astype(int)  # breakout volume
+        volumes[-2:] = (volumes[-2:] * 0.8).astype(int)
+    elif pattern == "pullback":
+        volumes[-12:-7] = (np.ones(5) * profile["vol"] * 1.5).astype(int)  # rally volume
+        volumes[-7:-3] = (np.ones(4) * profile["vol"] * 0.5).astype(int)  # shrink on pullback
+        volumes[-3:] = (np.ones(3) * profile["vol"] * 0.7).astype(int)
+    elif pattern == "divergence":
+        # Volume declining while price grinds up
+        for i in range(10):
+            volumes[-10+i] = int(profile["vol"] * (1.5 - i * 0.1))
+    else:
+        volumes[-3:] = (np.ones(3) * profile["vol"] * 2.0).astype(int)  # expansion volume
+
+    df = pd.DataFrame({
+        "date": [d.strftime("%Y-%m-%d") for d in dates],
+        "open": np.round(opens, 2),
+        "high": np.round(highs, 2),
+        "low": np.round(lows, 2),
+        "close": np.round(closes, 2),
+        "volume": volumes,
+    })
+    return df
+
+
+def fetch_stock_data(symbol: str, lookback_days: int = 60, use_mock: bool = False) -> Optional[pd.DataFrame]:
+    """Fetch OHLCV data for a US stock using yfinance, or generate mock data for demo."""
+    if use_mock:
+        logger.info(f"{symbol}: using mock data (demo mode)")
+        return generate_mock_data(symbol, lookback_days)
+
     try:
         import yfinance as yf
         ticker = yf.Ticker(symbol)
@@ -122,7 +211,7 @@ def analyze_stock(
 
 def run_scan(mode: str = "pre_market", stocks_override: Optional[List[str]] = None,
              top_n: Optional[int] = None, notify: bool = True, use_llm: bool = True,
-             use_options: bool = True):
+             use_options: bool = True, use_mock: bool = False):
     """
     Run the full scanning pipeline.
 
@@ -158,7 +247,7 @@ def run_scan(mode: str = "pre_market", stocks_override: Optional[List[str]] = No
     max_workers = min(config.max_workers, 5)
 
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        futures = {executor.submit(fetch_stock_data, sym, lookback): sym for sym in symbols}
+        futures = {executor.submit(fetch_stock_data, sym, lookback, use_mock): sym for sym in symbols}
         for future in as_completed(futures):
             sym = futures[future]
             try:
@@ -265,6 +354,13 @@ def main():
     use_options = not args.no_options
     use_llm = not args.no_llm
     notify = not args.no_notify
+    use_mock = getattr(args, 'demo', False)
+
+    # Common kwargs for run_scan
+    scan_kwargs = dict(
+        stocks_override=stocks_override, top_n=args.top,
+        notify=notify, use_llm=use_llm, use_options=use_options, use_mock=use_mock,
+    )
 
     if args.schedule:
         config = get_config()
@@ -274,36 +370,29 @@ def main():
         logger.info(f"定时模式启动: 盘前={pre_time} 盘后={post_time} (北京时间)")
 
         schedule.every().day.at(pre_time).do(
-            run_scan, mode="pre_market", stocks_override=stocks_override,
-            top_n=args.top, notify=notify, use_llm=use_llm, use_options=use_options
+            run_scan, mode="pre_market", **scan_kwargs
         )
         schedule.every().day.at(post_time).do(
-            run_scan, mode="post_market", stocks_override=stocks_override,
-            top_n=args.top, notify=notify, use_llm=use_llm, use_options=use_options
+            run_scan, mode="post_market", **scan_kwargs
         )
 
         # Run once immediately
-        run_scan(mode="pre_market", stocks_override=stocks_override,
-                 top_n=args.top, notify=notify, use_llm=use_llm, use_options=use_options)
+        run_scan(mode="pre_market", **scan_kwargs)
 
         while True:
             schedule.run_pending()
             time.sleep(60)
 
     elif args.both:
-        run_scan(mode="pre_market", stocks_override=stocks_override,
-                 top_n=args.top, notify=notify, use_llm=use_llm, use_options=use_options)
-        run_scan(mode="post_market", stocks_override=stocks_override,
-                 top_n=args.top, notify=notify, use_llm=use_llm, use_options=use_options)
+        run_scan(mode="pre_market", **scan_kwargs)
+        run_scan(mode="post_market", **scan_kwargs)
 
     elif args.post_market:
-        run_scan(mode="post_market", stocks_override=stocks_override,
-                 top_n=args.top, notify=notify, use_llm=use_llm, use_options=use_options)
+        run_scan(mode="post_market", **scan_kwargs)
 
     else:
         # Default: pre-market
-        run_scan(mode="pre_market", stocks_override=stocks_override,
-                 top_n=args.top, notify=notify, use_llm=use_llm, use_options=use_options)
+        run_scan(mode="pre_market", **scan_kwargs)
 
 
 if __name__ == "__main__":
