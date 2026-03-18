@@ -1,0 +1,68 @@
+# US Volume-Price Strategy (SRxTrades Style)
+# Volume + Price Action focused analysis for US large-cap stocks.
+
+name: us_volume_price
+display_name: 美股量价分析
+description: 基于 SRxTrades 风格的量价分析策略，核心关注量能在关键价位的行为。适用于美股中大盘科技股。
+category: trend
+core_rules: [1, 2, 3]
+required_tools:
+  - get_daily_history
+  - analyze_trend
+  - get_realtime_quote
+  - search_stock_news
+
+instructions: |
+  **美股量价分析策略（US Volume-Price Strategy — SRxTrades Style）**
+
+  核心理念：
+  - 量能是市场的真话，价格可以骗人但量能不会
+  - 不是简单看量大量小，而是看量能出现在什么价格位置
+  - 关键位的量能变化决定了交易方向和信心
+
+  适用场景：
+  - 美股大盘科技股（市值 > $20B）
+  - 日线级别分析，适合短线 2-5 天或中线 1-4 周持仓
+  - 盘前筛选 + 盘后复盘
+
+  分析框架：
+
+  1. **关键位识别（最优先）**
+     - 前高前低（Swing High / Swing Low）：最直观的支撑阻力
+     - 密集成交区（Volume Profile 节点）：大量筹码堆积的价位
+     - 关键均线位：MA20（短期趋势）、MA50（中期趋势）、MA200（长期趋势）
+     - 整数关口（心理价位）
+
+  2. **量能上下文分析（核心）**
+     - 关键位放量上涨 = 突破确认，多头资金进场
+     - 关键位放量下跌 = 跌破确认，空头力量占优
+     - 缩量回踩关键均线 = 健康回调，低吸机会（最佳买点）
+     - 放量滞涨（价格不涨但量能放大）= 顶部分歧信号
+     - 价格新高但量能萎缩 = 量价背离，警惕反转
+     - 异常爆量（> 3 倍均量）= 关键事件，需结合方向判断
+
+  3. **突破 / 回踩质量评估**
+     - 真突破：收盘站上关键位 + 放量 > 1.5 倍 + 次日维持
+     - 假突破：突破后量能快速萎缩 + 价格回落突破位下方
+     - 健康回踩：缩量回到突破位附近 + 企稳不破 = 二次入场机会
+     - 破位下杀：放量跌破关键支撑 = 止损信号
+
+  4. **期权辅助判断（如有数据）**
+     - PCR（Put/Call Ratio）极值 = 情绪反转信号
+     - 异常 Call 活动 = 机构看多
+     - 高 OI 行权价 = 期权定义的支撑/阻力
+     - Max Pain = 到期前的价格引力
+
+  5. **交易建议格式**
+     - 必须给出「条件 + 价格区间」建议：
+       如："若回踩 $132-134 区间缩量企稳，可轻仓介入；止损 $129（MA50 下方）；目标 $140-145（前高 + 高 OI Call 行权价）"
+     - 不符合条件时明确说"暂不出手，等待更好形态"
+     - 严禁无条件的模糊建议
+
+  评分调整：
+  - 放量突破关键位确认：sentiment_score +15
+  - 缩量回踩企稳（最佳买点）：sentiment_score +12
+  - 量价背离（价涨量缩）：sentiment_score -10
+  - 假突破反转：sentiment_score -12
+  - 放量跌破关键支撑：sentiment_score -15
+  - 异常期权活动配合：sentiment_score +8

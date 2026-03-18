@@ -278,6 +278,16 @@ class Config:
     # Discord 机器人扩展配置
     discord_bot_status: str = "A股智能分析 | /help"  # 机器人状态信息
     
+    # === 美股扫描器配置 ===
+    us_scanner_enabled: bool = False
+    us_scanner_stocks: List[str] = field(default_factory=list)
+    us_scanner_top_n: int = 10
+    us_scanner_pre_market_time: str = "21:00"
+    us_scanner_post_market_time: str = "05:00"
+    us_scanner_min_score: int = 60
+    us_scanner_volume_heavy_ratio: float = 2.0
+    us_scanner_lookback_days: int = 60
+
     # 单例实例存储
     _instance: Optional['Config'] = None
     
@@ -526,7 +536,16 @@ class Config:
             # - tushare: Tushare Pro，需要2000积分，数据全面
             realtime_source_priority=cls._resolve_realtime_source_priority(),
             realtime_cache_ttl=int(os.getenv('REALTIME_CACHE_TTL', '600')),
-            circuit_breaker_cooldown=int(os.getenv('CIRCUIT_BREAKER_COOLDOWN', '300'))
+            circuit_breaker_cooldown=int(os.getenv('CIRCUIT_BREAKER_COOLDOWN', '300')),
+            # 美股扫描器配置
+            us_scanner_enabled=os.getenv('US_SCANNER_ENABLED', 'false').lower() == 'true',
+            us_scanner_stocks=[s.strip().upper() for s in os.getenv('US_SCANNER_STOCKS', '').split(',') if s.strip()],
+            us_scanner_top_n=int(os.getenv('US_SCANNER_TOP_N', '10')),
+            us_scanner_pre_market_time=os.getenv('US_SCANNER_PRE_MARKET_TIME', '21:00'),
+            us_scanner_post_market_time=os.getenv('US_SCANNER_POST_MARKET_TIME', '05:00'),
+            us_scanner_min_score=int(os.getenv('US_SCANNER_MIN_SCORE', '60')),
+            us_scanner_volume_heavy_ratio=float(os.getenv('US_SCANNER_VOLUME_HEAVY_RATIO', '2.0')),
+            us_scanner_lookback_days=int(os.getenv('US_SCANNER_LOOKBACK_DAYS', '60')),
         )
     
     @classmethod
